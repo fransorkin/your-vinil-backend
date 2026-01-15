@@ -1,131 +1,158 @@
-const express = require("express");
+const express = require('express');
+const jwt = require('jsonwebtoken');
+const User = require('../models/User.model');
+const { authenticate } = require('../middleware/auth');
+
 const router = express.Router();
 
-// ℹ️ Handles password encryption
-const bcrypt = require("bcrypt");
+const generateToken = (userId) => {
+  return jwt.sign({ id: userId }, process.env.JWT_SECRET, { expiresIn: '7d' });
+};
 
-// ℹ️ Handles password encryption
-const jwt = require("jsonwebtoken");
+// POST /api/auth/register
+router.post('/register', async (req, res) => {
+  try {
+    const { username, email, password, passwordConfirm } = req.body;
 
-// Require the User model in order to interact with the database
-const User = require("../models/User.model");
+    if (!username || !email || !password || !passwordConfirm) {
+      return res.status(400).json({
+        message: 'Missing required fields',
+        required: ['username', 'email', 'password', 'passwordConfirm'],
+      });
+    }
 
-// Require necessary (isAuthenticated) middleware in order to control access to specific routes
-const { isAuthenticated } = require("../middleware/jwt.middleware.js");
+    if (password !== passwordConfirm) {
+      return res.status(400).json({
+        message: 'Passwords do not match',
+        error: 'password and passwordConfirm must be identical',
+      });
+    }
 
-// How many rounds should bcrypt run the salt (default - 10 rounds)
-const saltRounds = 10;
+    if (password.length < 6) {
+      return res.status(400).json({
+        message: 'Password too short',
+        error: 'Password must be at least 6 characters',
+      });
+    }
 
-// POST /auth/signup  - Creates a new user in the database
-router.post("/signup", (req, res, next) => {
-  const { email, password, name } = req.body;
+    const existingUser = await User.findOne({ $or: [{ email }, { username }] });
 
-  // Check if email or password or name are provided as empty strings
-  if (email === "" || password === "" || name === "") {
-    res.status(400).json({ message: "Provide email, password and name" });
-    return;
-  }
+    if (existingUser) {
+      return res.status(400).json({
+        message: 'User already exists',
+        error: existingUser.email === email ? 'Email already registered' : 'Username already taken',
+      });
+    }
 
-  // This regular expression check that the email is of a valid format
-  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
-  if (!emailRegex.test(email)) {
-    res.status(400).json({ message: "Provide a valid email address." });
-    return;
-  }
+    const newUser = new User({ username, email, password });
+    await newUser.save();
 
-  // This regular expression checks password for special characters and minimum length
-  const passwordRegex = /(?=.*\d)(?=.*[a-z])(?=.*[A-Z]).{6,}/;
-  if (!passwordRegex.test(password)) {
-    res.status(400).json({
-      message:
-        "Password must have at least 6 characters and contain at least one number, one lowercase and one uppercase letter.",
+    const token = generateToken(newUser._id);
+
+    res.status(201).json({
+      message: 'User registered successfully',
+      token,
+      user: {
+        id: newUser._id,
+        username: newUser.username,
+        email: newUser.email,
+        createdAt: newUser.createdAt,
+      },
     });
-    return;
+  } catch (error) {
+    console.error('Register error:', error);
+    res.status(500).json({
+      message: 'Error registering user',
+      error: error.message,
+    });
   }
-
-  // Check the users collection if a user with the same email already exists
-  User.findOne({ email })
-    .then((foundUser) => {
-      // If the user with the same email already exists, send an error response
-      if (foundUser) {
-        res.status(400).json({ message: "User already exists." });
-        return;
-      }
-
-      // If email is unique, proceed to hash the password
-      const salt = bcrypt.genSaltSync(saltRounds);
-      const hashedPassword = bcrypt.hashSync(password, salt);
-
-      // Create the new user in the database
-      // We return a pending promise, which allows us to chain another `then`
-      return User.create({ email, password: hashedPassword, name });
-    })
-    .then((createdUser) => {
-      // Deconstruct the newly created user object to omit the password
-      // We should never expose passwords publicly
-      const { email, name, _id } = createdUser;
-
-      // Create a new object that doesn't expose the password
-      const user = { email, name, _id };
-
-      // Send a json response containing the user object
-      res.status(201).json({ user: user });
-    })
-    .catch((err) => next(err)); // In this case, we send error handling to the error handling middleware.
 });
 
-// POST  /auth/login - Verifies email and password and returns a JWT
-router.post("/login", (req, res, next) => {
-  const { email, password } = req.body;
+// POST /api/auth/login
+router.post('/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
 
-  // Check if email or password are provided as empty string
-  if (email === "" || password === "") {
-    res.status(400).json({ message: "Provide email and password." });
-    return;
+    if (!email || !password) {
+      return res.status(400).json({
+        message: 'Missing required fields',
+        required: ['email', 'password'],
+      });
+    }
+
+    const user = await User.findOne({ email }).select('+password');
+
+    if (!user) {
+      return res.status(401).json({
+        message: 'Invalid credentials',
+        error: 'Email or password is incorrect',
+      });
+    }
+
+    const isPasswordValid = await user.comparePassword(password);
+
+    if (!isPasswordValid) {
+      return res.status(401).json({
+        message: 'Invalid credentials',
+        error: 'Email or password is incorrect',
+      });
+    }
+
+    const token = generateToken(user._id);
+
+    res.status(200).json({
+      message: 'Login successful',
+      token,
+      user: {
+        id: user._id,
+        username: user.username,
+        email: user.email,
+      },
+    });
+  } catch (error) {
+    console.error('Login error:', error);
+    res.status(500).json({
+      message: 'Error logging in',
+      error: error.message,
+    });
   }
-
-  // Check the users collection if a user with the same email exists
-  User.findOne({ email })
-    .then((foundUser) => {
-      if (!foundUser) {
-        // If the user is not found, send an error response
-        res.status(401).json({ message: "User not found." });
-        return;
-      }
-
-      // Compare the provided password with the one saved in the database
-      const passwordCorrect = bcrypt.compareSync(password, foundUser.password);
-
-      if (passwordCorrect) {
-        // Deconstruct the user object to omit the password
-        const { _id, email, name } = foundUser;
-
-        // Create an object that will be set as the token payload
-        const payload = { _id, email, name };
-
-        // Create a JSON Web Token and sign it
-        const authToken = jwt.sign(payload, process.env.TOKEN_SECRET, {
-          algorithm: "HS256",
-          expiresIn: "6h",
-        });
-
-        // Send the token as the response
-        res.status(200).json({ authToken: authToken });
-      } else {
-        res.status(401).json({ message: "Unable to authenticate the user" });
-      }
-    })
-    .catch((err) => next(err)); // In this case, we send error handling to the error handling middleware.
 });
 
-// GET  /auth/verify  -  Used to verify JWT stored on the client
-router.get("/verify", isAuthenticated, (req, res, next) => {
-  // If JWT token is valid the payload gets decoded by the
-  // isAuthenticated middleware and is made available on `req.payload`
-  console.log(`req.payload`, req.payload);
+// GET /api/auth/profile
+router.get('/profile', authenticate, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id);
 
-  // Send back the token payload object containing the user data
-  res.status(200).json(req.payload);
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    res.status(200).json({
+      message: 'Profile retrieved successfully',
+      user: {
+        id: user._id,
+        username: user.username,
+        email: user.email,
+        profileImage: user.profileImage,
+        isActive: user.isActive,
+        createdAt: user.createdAt,
+      },
+    });
+  } catch (error) {
+    console.error('Profile error:', error);
+    res.status(500).json({
+      message: 'Error retrieving profile',
+      error: error.message,
+    });
+  }
+});
+
+// POST /api/auth/logout
+router.post('/logout', authenticate, (req, res) => {
+  res.status(200).json({
+    message: 'Logout successful',
+    note: 'Delete the token from client side',
+  });
 });
 
 module.exports = router;
