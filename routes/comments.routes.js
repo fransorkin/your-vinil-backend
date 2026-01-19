@@ -1,6 +1,7 @@
 const express = require('express');
 const Comment = require('../models/Comment.model');
 const Vinyl = require('../models/Vinyl.model');
+const { authenticate } = require('../middleware/auth');
 
 const router = express.Router({ mergeParams: true });
 
@@ -52,7 +53,7 @@ router.get('/', async (req, res) => {
 });
 
 // POST /api/vinyls/:id/comments
-router.post('/', async (req, res) => {
+router.post('/', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
     const { content, rating } = req.body;
@@ -82,7 +83,7 @@ router.post('/', async (req, res) => {
     const newComment = new Comment({
       content: content.trim(),
       vinyl: id,
-      author: null,
+      author: req.user.id,
       rating: rating ? Math.min(5, Math.max(1, parseInt(rating))) : null,
       isEdited: false,
     });
@@ -98,6 +99,41 @@ router.post('/', async (req, res) => {
     console.error('Create comment error:', error);
     res.status(500).json({
       message: 'Error creating comment',
+      error: error.message,
+    });
+  }
+});
+
+// DELETE /api/vinyls/:vinylId/comments/:commentId
+router.delete('/:commentId', authenticate, async (req, res) => {
+  try {
+    const { commentId } = req.params;
+
+    const comment = await Comment.findById(commentId);
+    if (!comment) {
+      return res.status(404).json({
+        message: 'Comment not found',
+        error: `No comment found with ID ${commentId}`,
+      });
+    }
+
+    // Verificar que el usuario sea el autor del comentario
+    if (comment.author.toString() !== req.user.id) {
+      return res.status(403).json({
+        message: 'Unauthorized',
+        error: 'You can only delete your own comments',
+      });
+    }
+
+    await Comment.findByIdAndDelete(commentId);
+
+    res.status(200).json({
+      message: 'Comment deleted successfully',
+    });
+  } catch (error) {
+    console.error('Delete comment error:', error);
+    res.status(500).json({
+      message: 'Error deleting comment',
       error: error.message,
     });
   }

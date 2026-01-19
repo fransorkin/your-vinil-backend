@@ -11,7 +11,7 @@ router.use('/:id/comments', commentsRouter);
 // GET /api/vinyls - Obtener todos los vinyls con filtros opcionales
 router.get('/', async (req, res) => {
   try {
-    const { genre, owner, search, limit = 20, page = 1 } = req.query;
+    const { genre, owner, search, limit = 100, page = 1 } = req.query;
     const filter = { isPublic: true };
 
     if (genre) filter.genre = genre;
